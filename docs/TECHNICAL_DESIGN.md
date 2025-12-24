@@ -1,17 +1,28 @@
-# 금속 반사 버튼 기술 설계서
+# 금속 반사 버튼 기술 설계서 v2.0
 ## Metal Reflective Button Technical Design Document
 
 ---
 
 ## 1. 개요 (Overview)
 
-본 문서는 웹캠 기반 실시간 금속 반사 효과를 구현하는 캡슐형 버튼의 기술적 설계를 다룹니다.
-금속학(Metallurgy)과 광학(Optics) 원리를 기반으로 물리적으로 정확한(Physically Based) 렌더링을 목표로 합니다.
+웹캠 기반 실시간 금속 반사 효과를 구현하는 캡슐형 버튼의 기술 설계서입니다.
+사용자의 위치에 따라 금속 표면의 반사가 동적으로 변화하는 효과를 구현합니다.
 
 ### 1.1 목표
-- 구리(Copper), 스틸(Steel), 알루미늄(Aluminum)의 광학적 특성을 정확히 재현
-- 웹캠 영상을 환경맵으로 활용한 실시간 반사 효과
-- 얼굴 트래킹 기반 동적 조명 시뮬레이션
+- 구리(Copper), 알루미늄(Aluminum), 스틸(Steel) 3가지 금속 버튼 구현
+- 웹캠 영상을 환경맵으로 활용한 실시간 Screen-space Reflection
+- 사용자 위치 트래킹 기반 동적 하이라이트 이동
+- 400px 고정 크기 캡슐 버튼
+
+### 1.2 기술 스택 (확정)
+
+| 항목 | 선택 | 비고 |
+|------|------|------|
+| 렌더링 | **WebGL2** | Vanilla JS, 프레임워크 없음 |
+| 카메라 | **getUserMedia** | 640x480, 30FPS |
+| 셰이더 | **GLSL** | vertex + fragment |
+| 트래킹 | **FaceDetector API** | 브라우저 내장 (Chrome) |
+| 조명 모델 | **Fresnel Only** | Cook-Torrance 미사용 |
 
 ---
 
@@ -19,296 +30,292 @@
 
 ### 2.1 금속의 광학적 특성
 
-금속의 색상과 반사 특성은 **복소 굴절률(Complex Refractive Index)**에 의해 결정됩니다:
+금속의 색상은 **복소 굴절률**에 의해 결정됩니다:
 
 ```
 ñ = n + ik
 ```
+- **n**: 굴절률 (빛의 속도 변화)
+- **k**: 소광계수 (빛의 흡수율)
 
-- **n (굴절률, Refractive Index)**: 빛의 속도 변화
-- **k (소광계수, Extinction Coefficient)**: 빛의 흡수율
+### 2.2 대상 금속의 광학 상수
 
-### 2.2 대상 금속의 광학 상수 (@ 550nm 가시광선)
+| 금속 | n | k | F₀ (RGB) | 특성 색상 |
+|------|---|---|----------|-----------|
+| **구리** | 0.27 | 2.58 | (0.955, 0.638, 0.538) | 적황색 |
+| **알루미늄** | 1.37 | 7.62 | (0.913, 0.922, 0.924) | 은백색 |
+| **스틸** | 2.75 | 3.79 | (0.562, 0.565, 0.578) | 회백색 |
 
-| 금속 | n | k | 반사율(R) | 특성 색상 |
-|------|-----|-----|-----------|-----------|
-| **구리 (Copper)** | 0.27 | 2.58 | 0.95 | 적황색 (Red-Orange) |
-| **알루미늄 (Aluminum)** | 1.37 | 7.62 | 0.91 | 은백색 (Silver-White) |
-| **스테인리스 스틸 (Stainless Steel)** | 2.75 | 3.79 | 0.58 | 회백색 (Gray) |
+### 2.3 F₀ 값의 의미
 
-### 2.3 분광 반사율 데이터 (Spectral Reflectance)
-
-각 금속은 파장별로 다른 반사율을 가지며, 이것이 고유한 색상을 만듭니다:
+**F₀ (Fresnel Reflectance at Normal Incidence)**:
+- 빛이 표면에 수직으로 입사할 때의 반사율
+- 금속의 고유한 색상을 결정하는 핵심 값
+- RGB 채널별로 다른 값 → 금속 고유색 발현
 
 ```
-구리 (Copper):
-├── 400nm (보라): R = 0.35 (낮음 - 흡수)
-├── 500nm (청록): R = 0.42 (낮음 - 흡수)
-├── 600nm (주황): R = 0.85 (높음 - 반사) ← 구리색의 원인
-└── 700nm (적색): R = 0.97 (매우 높음)
-
-알루미늄 (Aluminum):
-├── 400nm: R = 0.92
-├── 500nm: R = 0.91
-├── 600nm: R = 0.90
-└── 700nm: R = 0.89
-→ 전 파장 균일한 반사 = 은백색
-
-스테인리스 스틸 (Stainless Steel):
-├── 400nm: R = 0.55
-├── 500nm: R = 0.58
-├── 600nm: R = 0.60
-└── 700nm: R = 0.62
-→ 약간의 황색 편향, 전반적 회색
+구리: R 높음, G/B 낮음 → 붉은 빛
+알루미늄: R≈G≈B (높음) → 은백색
+스틸: R≈G≈B (중간) → 회색
 ```
 
 ---
 
-## 3. 광학적 모델링 (Optical Modeling)
+## 3. 광학 모델 (Fresnel Only)
 
-### 3.1 BRDF (양방향 반사 분포 함수)
+### 3.1 설계 결정
 
-금속 표면의 빛 반사를 시뮬레이션하기 위해 **Cook-Torrance BRDF** 모델을 사용합니다:
+전체 Cook-Torrance BRDF 대신 **Fresnel 항만 사용**:
 
-```
-f_r = (D * F * G) / (4 * (N·V) * (N·L))
-```
+| 요소 | 사용 여부 | 이유 |
+|------|-----------|------|
+| **F (Fresnel)** | ✅ 사용 | 금속 반사의 핵심. 시야각별 반사율 변화 |
+| D (Distribution) | ❌ 미사용 | 광택 금속(roughness<0.2)에서 영향 미미 |
+| G (Geometry) | ❌ 미사용 | 위와 동일 |
 
-구성 요소:
-- **D (Normal Distribution Function)**: 미세면 분포 - GGX/Trowbridge-Reitz 사용
-- **F (Fresnel Term)**: 시야각에 따른 반사율 변화
-- **G (Geometry Function)**: 미세면 그림자/마스킹
+### 3.2 Fresnel-Schlick 근사
 
-### 3.2 Fresnel 방정식 (Schlick 근사)
-
-```javascript
-F(θ) = F₀ + (1 - F₀)(1 - cos(θ))⁵
-```
-
-- **F₀**: 수직 입사 시 반사율 (금속별 고유값)
-- **θ**: 시야각 (View Angle)
-
-| 금속 | F₀ (RGB) |
-|------|----------|
-| 구리 | (0.955, 0.638, 0.538) |
-| 알루미늄 | (0.913, 0.922, 0.924) |
-| 스틸 | (0.562, 0.565, 0.578) |
-
-### 3.3 GGX 법선 분포 함수
-
-```javascript
-D(h) = α² / (π * ((N·H)² * (α² - 1) + 1)²)
+```glsl
+vec3 fresnelSchlick(float cosTheta, vec3 F0) {
+    return F0 + (1.0 - F0) * pow(1.0 - cosTheta, 5.0);
+}
 ```
 
-- **α (Roughness)**: 표면 거칠기 (0 = 거울, 1 = 무광)
-  - 광택 금속: α = 0.05 ~ 0.15
-  - 브러시드 메탈: α = 0.3 ~ 0.5
+### 3.3 시야각에 따른 반사율 변화
+
+```
+시야각 θ     반사율 변화
+─────────────────────────
+  0° (정면)   F₀ (금속 고유색)
+ 45°         F₀ + 약간 밝아짐
+ 75°         거의 흰색에 가까움
+ 90° (측면)   1.0 (완전 반사)
+```
+
+이 효과로 캡슐 버튼의 **가장자리가 더 밝게** 보입니다.
 
 ---
 
-## 4. 얼굴 트래킹 기반 조명 시뮬레이션
+## 4. 위치 트래킹 시스템
 
-### 4.1 원리
+### 4.1 목적
 
-사용자의 얼굴 위치를 **가상 광원**으로 해석합니다:
+사용자의 위치(얼굴/물체)를 추적하여 **하이라이트 위치를 동적으로 이동**:
 
 ```
-┌─────────────────────────────────────┐
-│           웹캠 화면                 │
-│                                     │
-│      👤 ← 얼굴 = 광원 위치          │
-│       ↓                             │
-│    ┌─────────┐                      │
-│    │ 버 튼  │ ← 반사면              │
-│    └─────────┘                      │
-│                                     │
-└─────────────────────────────────────┘
+    사용자 위치
+        👤 ←─ 왼쪽으로 이동
+       ╱
+      ╱
+┌────────────────┐
+│ ╭────────────╮ │
+│ │    ●───→   │ │  ← 하이라이트가 오른쪽으로 이동
+│ ╰────────────╯ │
+└────────────────┘
 ```
 
-### 4.2 광원 벡터 계산
+### 4.2 FaceDetector API (1순위)
 
 ```javascript
-// 얼굴 중심 좌표를 광원 방향으로 변환
-lightDirection = normalize(vec3(
-    (faceX - 0.5) * 2.0,  // X: -1 ~ 1
-    (faceY - 0.5) * 2.0,  // Y: -1 ~ 1
-    -1.0                   // Z: 화면 앞쪽
-));
+// Chrome 내장 API - 별도 라이브러리 불필요
+const detector = new FaceDetector({ fastMode: true });
+
+async function detectPosition(videoFrame) {
+    try {
+        const faces = await detector.detect(videoFrame);
+        if (faces.length > 0) {
+            const box = faces[0].boundingBox;
+            return {
+                x: (box.x + box.width / 2) / videoFrame.width,   // 0~1
+                y: (box.y + box.height / 2) / videoFrame.height  // 0~1
+            };
+        }
+    } catch (e) {
+        // API 미지원 시 fallback
+    }
+    return { x: 0.5, y: 0.5 }; // 기본값: 중앙
+}
 ```
 
-### 4.3 하이라이트 위치 계산
+### 4.3 Fallback 전략
+
+| 우선순위 | 방법 | 조건 |
+|----------|------|------|
+| 1 | FaceDetector API | Chrome 지원 |
+| 2 | 화면 중앙 고정 | API 미지원 시 |
+
+### 4.4 위치 → 광원 방향 변환
 
 ```javascript
-// 반사 법칙: 입사각 = 반사각
-reflectDir = reflect(-lightDir, normal);
-specularIntensity = pow(max(dot(reflectDir, viewDir), 0.0), shininess);
-```
-
----
-
-## 5. 환경맵 반사 (Environment Mapping)
-
-### 5.1 웹캠을 환경맵으로 사용
-
-웹캠 영상을 실시간 **큐브맵(Cubemap)** 또는 **등장방형 맵(Equirectangular Map)**으로 변환하여
-금속 표면에 반사시킵니다.
-
-```
-┌──────────────────────────────────────────────┐
-│                 웹캠 영상                     │
-│    ┌────────────────────────────────┐        │
-│    │  실제 환경 (사용자, 방, 조명)   │        │
-│    └────────────────────────────────┘        │
-│                    ↓                         │
-│           UV 좌표 매핑                        │
-│                    ↓                         │
-│    ┌────────────────────────────────┐        │
-│    │      금속 버튼 표면에 반사       │        │
-│    └────────────────────────────────┘        │
-└──────────────────────────────────────────────┘
-```
-
-### 5.2 반사 벡터 계산
-
-```javascript
-// 뷰 방향과 법선으로 반사 방향 계산
-vec3 I = normalize(position - cameraPosition);
-vec3 R = reflect(I, normal);
-
-// 반사 벡터로 환경맵 샘플링
-vec2 envUV = vec2(
-    0.5 + atan(R.z, R.x) / (2.0 * PI),
-    0.5 - asin(R.y) / PI
-);
-vec4 envColor = texture2D(webcamTexture, envUV);
-```
-
----
-
-## 6. 캡슐 형태 버튼 지오메트리
-
-### 6.1 형태 정의
-
-**스타디움(Stadium)** 또는 **디스코렉탱글(Discorectangle)** 형태:
-
-```
-    ╭──────────────────────╮
-    │                      │
-    ╰──────────────────────╯
-
-    r = 높이/2
-    w = 전체 너비
-```
-
-### 6.2 법선 벡터 분포
-
-캡슐 형태의 표면 법선은 곡률에 따라 연속적으로 변화:
-
-```
-중앙 영역:     법선 = (0, 0, 1) → 정면 반사
-좌측 곡면:     법선 = (-cos(θ), 0, sin(θ)) → 좌측 반사
-우측 곡면:     법선 = (cos(θ), 0, sin(θ)) → 우측 반사
-```
-
-### 6.3 CSS 구현 시 그라데이션 매핑
-
-```css
-/* 캡슐 형태의 3D 곡면감 표현 */
-.metal-button {
-    border-radius: 9999px; /* 완전한 캡슐 */
-    background: linear-gradient(
-        180deg,
-        /* 상단 하이라이트 */ var(--highlight) 0%,
-        /* 기본 금속색 */ var(--base-color) 45%,
-        /* 하단 그림자 */ var(--shadow) 100%
-    );
+// 트래킹 위치를 광원 방향 벡터로 변환
+function positionToLightDir(pos) {
+    return {
+        x: (pos.x - 0.5) * 2.0,  // -1 ~ 1
+        y: (pos.y - 0.5) * 2.0,  // -1 ~ 1
+        z: -1.0                   // 화면 앞쪽
+    };
 }
 ```
 
 ---
 
-## 7. 기술 스택 및 구현 방식
+## 5. Screen-Space Reflection
 
-### 7.1 선택: WebGL + Three.js
+### 5.1 원리
 
-| 기술 | 용도 | 선택 이유 |
-|------|------|-----------|
-| **Three.js** | 3D 렌더링 | PBR 머티리얼, 환경맵 지원 |
-| **TensorFlow.js** | 얼굴 트래킹 | face-landmarks-detection 모델 |
-| **WebRTC** | 웹캠 접근 | MediaDevices API |
-| **GLSL** | 커스텀 셰이더 | 금속 반사 정밀 제어 |
-
-### 7.2 대안: 순수 CSS + Canvas (경량화)
-
-복잡한 3D 없이 2D로 금속 효과 근사:
-- CSS Gradient로 기본 금속 광택
-- Canvas로 동적 하이라이트 오버레이
-- Face-api.js로 얼굴 트래킹
-
-### 7.3 권장 방식
-
-**하이브리드 접근**:
-1. 버튼 외형: CSS (반응형, 접근성)
-2. 금속 반사: Canvas 2D (성능)
-3. 얼굴 트래킹: TensorFlow.js (정확도)
-
----
-
-## 8. 구현 아키텍처
+웹캠 영상을 **2D 텍스처로 직접 샘플링** (Cubemap 미사용):
 
 ```
-┌─────────────────────────────────────────────────────────────┐
-│                        Application                          │
-├─────────────────────────────────────────────────────────────┤
-│  ┌─────────────┐  ┌──────────────┐  ┌───────────────────┐  │
-│  │ WebcamModule│  │ FaceTracker  │  │ MetalRenderer     │  │
-│  │             │  │              │  │                   │  │
-│  │ - stream    │  │ - landmarks  │  │ - materialProps   │  │
-│  │ - frame     │→ │ - position   │→ │ - lightPosition   │  │
-│  │             │  │ - rotation   │  │ - envMap          │  │
-│  └─────────────┘  └──────────────┘  └───────────────────┘  │
-│         ↓                ↓                   ↓              │
-│  ┌──────────────────────────────────────────────────────┐  │
-│  │                    ButtonView                         │  │
-│  │  ┌────────────────────────────────────────────────┐  │  │
-│  │  │              Canvas/WebGL Layer                 │  │  │
-│  │  │  - Dynamic specular highlights                 │  │  │
-│  │  │  - Environment reflection                      │  │  │
-│  │  └────────────────────────────────────────────────┘  │  │
-│  │  ┌────────────────────────────────────────────────┐  │  │
-│  │  │              CSS Base Layer                     │  │  │
-│  │  │  - Capsule shape                               │  │  │
-│  │  │  - Base metal gradient                         │  │  │
-│  │  └────────────────────────────────────────────────┘  │  │
-│  └──────────────────────────────────────────────────────┘  │
-└─────────────────────────────────────────────────────────────┘
+반사 벡터 R = reflect(-V, N)
+    ↓
+R.xy를 UV 좌표로 변환
+    ↓
+웹캠 텍스처에서 샘플링
+```
+
+### 5.2 GLSL 구현
+
+```glsl
+// 반사 벡터 계산
+vec3 V = vec3(0.0, 0.0, 1.0);  // 시야 방향 (화면 정면)
+vec3 R = reflect(-V, N);       // 반사 방향
+
+// 반사 벡터 → UV 좌표
+vec2 envUV = R.xy * 0.5 + 0.5;
+
+// 화면 밖 처리
+envUV = clamp(envUV, 0.0, 1.0);
+
+// 텍스처 샘플링 (mipmap으로 roughness 표현)
+float mipLevel = roughness * float(maxMipLevels);
+vec3 envColor = textureLod(cameraTexture, envUV, mipLevel).rgb;
+```
+
+### 5.3 Roughness와 Mipmap
+
+```
+roughness = 0.0  →  mip 0 (선명한 반사)
+roughness = 0.5  →  mip 4 (흐릿한 반사)
+roughness = 1.0  →  mip 8 (완전 블러)
 ```
 
 ---
 
-## 9. 금속별 셰이더 파라미터
+## 6. SDF 기반 캡슐 지오메트리
+
+### 6.1 Signed Distance Function
+
+Fragment shader에서 **분석적으로(analytically)** 캡슐 형태와 법선을 계산:
+
+```glsl
+// 캡슐 SDF (Signed Distance Function)
+float sdCapsule(vec2 p, float r, float h) {
+    p.x = abs(p.x) - h;  // 중앙 직선 영역 제외
+    return length(max(p, 0.0)) + min(max(p.x, p.y), 0.0) - r;
+}
+```
+
+### 6.2 법선 벡터 계산
+
+```glsl
+// SDF 그래디언트로 법선 계산
+vec3 calcNormal(vec2 p, float r, float h) {
+    vec2 e = vec2(0.001, 0.0);
+    float d = sdCapsule(p, r, h);
+    vec2 grad = vec2(
+        sdCapsule(p + e.xy, r, h) - sdCapsule(p - e.xy, r, h),
+        sdCapsule(p + e.yx, r, h) - sdCapsule(p - e.yx, r, h)
+    );
+    // 3D 법선으로 확장 (z = 곡면 깊이감)
+    return normalize(vec3(grad, 0.5));
+}
+```
+
+### 6.3 캡슐 영역 판정
+
+```glsl
+float sdf = sdCapsule(localPos, radius, halfWidth);
+if (sdf > 0.0) {
+    discard;  // 캡슐 외부는 그리지 않음
+}
+```
+
+---
+
+## 7. 시스템 아키텍처
+
+```
+┌──────────────────────────────────────────────────────────────┐
+│                         main.js                              │
+├──────────────────────────────────────────────────────────────┤
+│                                                              │
+│  ┌─────────────────┐      ┌──────────────────┐              │
+│  │  CameraService  │      │  PositionTracker │              │
+│  │                 │      │                  │              │
+│  │  - stream       │─────→│  - FaceDetector  │              │
+│  │  - videoElement │      │  - position {x,y}│              │
+│  └────────┬────────┘      └────────┬─────────┘              │
+│           │                        │                         │
+│           ▼                        ▼                         │
+│  ┌─────────────────────────────────────────────┐            │
+│  │              GLContext                       │            │
+│  │                                              │            │
+│  │  - WebGL2 context                           │            │
+│  │  - Shader compilation                       │            │
+│  │  - Texture management                       │            │
+│  └────────────────────┬────────────────────────┘            │
+│                       │                                      │
+│                       ▼                                      │
+│  ┌─────────────────────────────────────────────┐            │
+│  │           CapsuleRenderer (×3)              │            │
+│  │                                              │            │
+│  │  ┌─────────┐ ┌─────────┐ ┌─────────┐       │            │
+│  │  │ COPPER  │ │ALUMINUM │ │  STEEL  │       │            │
+│  │  │         │ │         │ │         │       │            │
+│  │  │ F₀=RGB  │ │ F₀=RGB  │ │ F₀=RGB  │       │            │
+│  │  └─────────┘ └─────────┘ └─────────┘       │            │
+│  └─────────────────────────────────────────────┘            │
+│                                                              │
+└──────────────────────────────────────────────────────────────┘
+```
+
+---
+
+## 8. 파일 구조
+
+```
+Metal-Button-Design/
+├── index.html                 # 진입점, 3개 버튼 배치
+├── main.js                    # 앱 초기화 및 루프
+├── modules/
+│   ├── CameraService.js       # 웹캠 스트림 관리
+│   ├── PositionTracker.js     # FaceDetector 기반 위치 추적
+│   ├── GLContext.js           # WebGL2 컨텍스트 관리
+│   ├── CapsuleRenderer.js     # 캡슐 버튼 렌더링
+│   └── MetalMaterial.js       # 금속별 F₀, roughness 정의
+├── shaders/
+│   ├── capsule.vert           # 버텍스 셰이더
+│   └── capsule.frag           # 프래그먼트 셰이더
+└── docs/
+    └── TECHNICAL_DESIGN.md    # 본 문서
+```
+
+---
+
+## 9. 금속 머티리얼 정의
 
 ### 9.1 구리 (Copper)
 
 ```javascript
-const COPPER = {
+export const COPPER = {
     name: 'Copper',
-    // Fresnel F0 (sRGB)
-    baseColor: [0.955, 0.638, 0.538],
-    // 분광 반사 가중치
-    spectralWeights: {
-        red: 1.0,
-        green: 0.67,
-        blue: 0.56
-    },
-    // 표면 특성
+    F0: [0.955, 0.638, 0.538],  // 적황색 반사
     roughness: 0.1,
-    metalness: 1.0,
-    // CSS 그라데이션 색상
-    cssGradient: {
+    // fallback gradient
+    gradient: {
         highlight: '#FFD4A8',
         base: '#B87333',
-        shadow: '#8B4513'
+        shadow: '#7A4A1D'
     }
 };
 ```
@@ -316,17 +323,11 @@ const COPPER = {
 ### 9.2 알루미늄 (Aluminum)
 
 ```javascript
-const ALUMINUM = {
+export const ALUMINUM = {
     name: 'Aluminum',
-    baseColor: [0.913, 0.922, 0.924],
-    spectralWeights: {
-        red: 0.99,
-        green: 1.0,
-        blue: 1.0
-    },
+    F0: [0.913, 0.922, 0.924],  // 은백색 반사
     roughness: 0.15,
-    metalness: 1.0,
-    cssGradient: {
+    gradient: {
         highlight: '#FFFFFF',
         base: '#D4D4D4',
         shadow: '#A0A0A0'
@@ -334,21 +335,15 @@ const ALUMINUM = {
 };
 ```
 
-### 9.3 스테인리스 스틸 (Stainless Steel)
+### 9.3 스틸 (Steel)
 
 ```javascript
-const STEEL = {
-    name: 'Stainless Steel',
-    baseColor: [0.562, 0.565, 0.578],
-    spectralWeights: {
-        red: 0.97,
-        green: 0.98,
-        blue: 1.0
-    },
+export const STEEL = {
+    name: 'Steel',
+    F0: [0.562, 0.565, 0.578],  // 회백색 반사
     roughness: 0.2,
-    metalness: 1.0,
-    cssGradient: {
-        highlight: '#F0F0F0',
+    gradient: {
+        highlight: '#F8F8F8',
         base: '#8F8F8F',
         shadow: '#4A4A4A'
     }
@@ -357,89 +352,151 @@ const STEEL = {
 
 ---
 
-## 10. 성능 최적화 전략
+## 10. 셰이더 설계
 
-### 10.1 프레임 레이트 목표
-- 목표: 30 FPS 이상
-- 얼굴 트래킹: 15 FPS (별도 Worker)
-- 렌더링: 60 FPS
+### 10.1 Vertex Shader (capsule.vert)
 
-### 10.2 최적화 기법
+```glsl
+#version 300 es
+in vec2 aPosition;
+out vec2 vLocalPos;
 
-| 기법 | 설명 |
+void main() {
+    vLocalPos = aPosition;
+    gl_Position = vec4(aPosition, 0.0, 1.0);
+}
+```
+
+### 10.2 Fragment Shader (capsule.frag) - 핵심 로직
+
+```glsl
+#version 300 es
+precision highp float;
+
+in vec2 vLocalPos;
+out vec4 fragColor;
+
+uniform sampler2D uCameraTexture;
+uniform vec3 uF0;              // 금속별 Fresnel F0
+uniform float uRoughness;
+uniform vec2 uLightPos;        // 트래킹된 위치 (-1~1)
+uniform float uMaxMipLevel;
+
+// Fresnel-Schlick
+vec3 fresnel(float cosTheta, vec3 F0) {
+    return F0 + (1.0 - F0) * pow(1.0 - cosTheta, 5.0);
+}
+
+// 캡슐 SDF
+float sdCapsule(vec2 p, float r, float h) {
+    p.x = abs(p.x) - h;
+    return length(max(p, 0.0)) + min(max(p.x, p.y), 0.0) - r;
+}
+
+void main() {
+    // 1. 캡슐 영역 체크
+    float sdf = sdCapsule(vLocalPos, 0.15, 0.35);
+    if (sdf > 0.0) discard;
+
+    // 2. 법선 계산
+    vec3 N = calcNormal(vLocalPos);
+
+    // 3. 시야/광원 방향
+    vec3 V = vec3(0.0, 0.0, 1.0);
+    vec3 L = normalize(vec3(uLightPos, -1.0));
+
+    // 4. 반사 벡터 & 환경맵 샘플링
+    vec3 R = reflect(-V, N);
+    vec2 envUV = clamp(R.xy * 0.5 + 0.5, 0.0, 1.0);
+    float mip = uRoughness * uMaxMipLevel;
+    vec3 envColor = textureLod(uCameraTexture, envUV, mip).rgb;
+
+    // 5. Fresnel 적용
+    float NdotV = max(dot(N, V), 0.0);
+    vec3 F = fresnel(NdotV, uF0);
+
+    // 6. 최종 색상
+    vec3 color = envColor * F;
+
+    // 7. 하이라이트 추가 (광원 위치 기반)
+    vec3 H = normalize(V + L);
+    float spec = pow(max(dot(N, H), 0.0), 64.0);
+    color += spec * F;
+
+    fragColor = vec4(color, 1.0);
+}
+```
+
+---
+
+## 11. 성능 제약
+
+| 항목 | 제한 |
 |------|------|
-| **Web Worker** | 얼굴 트래킹을 별도 스레드에서 실행 |
-| **requestAnimationFrame** | 브라우저 렌더 주기와 동기화 |
-| **Resolution Scaling** | 웹캠 해상도를 480p로 제한 |
-| **Temporal Smoothing** | 얼굴 위치 변화를 보간하여 떨림 방지 |
+| Draw calls | ≤ 3 (버튼당 1) |
+| 카메라 텍스처 업로드 | 1회/프레임 |
+| 목표 FPS | 30 |
+| 카메라 해상도 | 640×480 |
+| 트래킹 주기 | 100ms (10 FPS) |
 
 ---
 
-## 11. 파일 구조
+## 12. 권한 및 Fallback
 
-```
-Metal-Button-Design/
-├── docs/
-│   └── TECHNICAL_DESIGN.md      # 본 문서
-├── src/
-│   ├── index.html               # 진입점
-│   ├── styles/
-│   │   └── metal-button.css     # 버튼 기본 스타일
-│   ├── shaders/
-│   │   ├── metal.vert           # 버텍스 셰이더
-│   │   └── metal.frag           # 프래그먼트 셰이더
-│   ├── modules/
-│   │   ├── webcam.js            # 웹캠 제어
-│   │   ├── faceTracker.js       # 얼굴 트래킹
-│   │   ├── metalRenderer.js     # 금속 렌더링
-│   │   └── metalProperties.js   # 금속 광학 상수
-│   └── main.js                  # 앱 초기화
-├── assets/
-│   └── textures/                # 브러시드 메탈 텍스처 등
-└── package.json
+### 12.1 카메라 권한 요청
+
+```javascript
+async function requestCamera() {
+    try {
+        const stream = await navigator.mediaDevices.getUserMedia({
+            video: { width: 640, height: 480 }
+        });
+        return stream;
+    } catch (e) {
+        return null;  // fallback 모드
+    }
+}
 ```
 
----
+### 12.2 Fallback 동작
 
-## 12. 구현 단계 계획
+카메라 권한 거부 시:
+- 웹캠 텍스처 대신 **정적 그라데이션** 사용
+- 트래킹 없이 **고정 하이라이트**
+- 동일한 셰이더, 입력만 변경
 
-### Phase 1: 기초 구조
-- [ ] 프로젝트 스캐폴딩
-- [ ] 캡슐 버튼 CSS 기본 형태
-- [ ] 정적 금속 그라데이션
+### 12.3 프라이버시 안내
 
-### Phase 2: 웹캠 통합
-- [ ] MediaDevices API 연동
-- [ ] 카메라 권한 요청 UI
-- [ ] 비디오 스트림 캡처
-
-### Phase 3: 얼굴 트래킹
-- [ ] TensorFlow.js 모델 로드
-- [ ] 얼굴 위치 추출
-- [ ] 광원 방향 계산
-
-### Phase 4: 금속 반사 렌더링
-- [ ] Canvas 오버레이 구현
-- [ ] 동적 하이라이트 계산
-- [ ] 환경맵 반사 효과
-
-### Phase 5: 통합 및 최적화
-- [ ] 모듈 통합
-- [ ] 성능 튜닝
-- [ ] 다중 금속 타입 지원
+```
+"이 버튼은 시각 효과를 위해 카메라를 사용합니다.
+ 영상은 저장되거나 전송되지 않습니다."
+```
 
 ---
 
-## 13. 참고 문헌
+## 13. 구현 단계
 
-1. **Physically Based Rendering: From Theory to Implementation** - Pharr, Jakob, Humphreys
-2. **Real-Time Rendering, 4th Edition** - Akenine-Möller et al.
-3. **Optical Properties of Metals** - CRC Handbook of Chemistry and Physics
-4. **An Inexpensive BRDF Model for Physically-based Rendering** - Schlick, 1994
-5. **Microfacet Models for Refraction through Rough Surfaces** - Walter et al., 2007
+| 단계 | 내용 | 산출물 |
+|------|------|--------|
+| **1** | WebGL2 컨텍스트 + quad 렌더링 | GLContext.js |
+| **2** | SDF 캡슐 셰이더 (정적 색상) | shaders/, CapsuleRenderer.js |
+| **3** | 웹캠 연결 + 텍스처 업로드 | CameraService.js |
+| **4** | Screen-space reflection | capsule.frag 업데이트 |
+| **5** | FaceDetector 트래킹 | PositionTracker.js |
+| **6** | 3개 금속 타입 | MetalMaterial.js, index.html |
+| **7** | Fallback 처리 | 권한 거부 시 정적 모드 |
 
 ---
 
-*문서 버전: 1.0*
-*작성일: 2024*
-*작성자: Claude (AI Assistant)*
+## 14. 참고 문헌
+
+1. **Physically Based Rendering** - Pharr, Jakob, Humphreys
+2. **Real-Time Rendering, 4th Ed** - Akenine-Möller et al.
+3. **An Inexpensive BRDF Model for Physically-based Rendering** - Schlick, 1994
+4. **Optical Properties of Metals** - CRC Handbook
+
+---
+
+*문서 버전: 2.0*
+*최종 수정: 2024*
+*확정 스펙 기반 전면 개정*

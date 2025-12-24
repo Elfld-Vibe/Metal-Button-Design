@@ -1,0 +1,101 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Metal Button Design</title>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+
+        body {
+            min-height: 100vh;
+            background: #1a1a2e;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            justify-content: center;
+            gap: 40px;
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+        }
+
+        .button-container {
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            gap: 12px;
+        }
+
+        .button-label {
+            color: #888;
+            font-size: 14px;
+            text-transform: uppercase;
+            letter-spacing: 2px;
+        }
+
+        canvas {
+            display: block;
+        }
+
+        #permission-prompt {
+            position: fixed;
+            top: 20px;
+            left: 50%;
+            transform: translateX(-50%);
+            background: rgba(255, 255, 255, 0.1);
+            backdrop-filter: blur(10px);
+            padding: 16px 24px;
+            border-radius: 12px;
+            color: #fff;
+            font-size: 14px;
+            text-align: center;
+            display: none;
+        }
+
+        #permission-prompt.visible {
+            display: block;
+        }
+
+        #permission-prompt button {
+            margin-top: 12px;
+            padding: 8px 20px;
+            border: none;
+            border-radius: 6px;
+            background: #4a9eff;
+            color: #fff;
+            cursor: pointer;
+            font-size: 14px;
+        }
+
+        #permission-prompt button:hover {
+            background: #3a8eef;
+        }
+    </style>
+</head>
+<body>
+    <div id="permission-prompt">
+        <p>이 버튼은 시각 효과를 위해 카메라를 사용합니다.<br>영상은 저장되거나 전송되지 않습니다.</p>
+        <button id="enable-camera">카메라 활성화</button>
+    </div>
+
+    <div class="button-container">
+        <canvas id="copper-button" width="400" height="100"></canvas>
+        <span class="button-label">Copper</span>
+    </div>
+
+    <div class="button-container">
+        <canvas id="aluminum-button" width="400" height="100"></canvas>
+        <span class="button-label">Aluminum</span>
+    </div>
+
+    <div class="button-container">
+        <canvas id="steel-button" width="400" height="100"></canvas>
+        <span class="button-label">Steel</span>
+    </div>
+
+    <script type="module" src="main.js"></script>
+</body>
+</html>

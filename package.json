@@ -2,7 +2,6 @@
   "name": "metal-button-design",
   "version": "1.0.0",
   "description": "Physically-based metal reflective button with webcam environment mapping and face tracking",
-  "main": "src/main.js",
   "type": "module",
   "scripts": {
     "dev": "vite",
@@ -12,19 +11,14 @@
   "keywords": [
     "metal",
     "pbr",
-    "webgl",
+    "webgl2",
     "face-tracking",
-    "ui-component"
+    "ui-component",
+    "fresnel"
   ],
   "author": "",
   "license": "MIT",
   "devDependencies": {
     "vite": "^5.0.0"
-  },
-  "dependencies": {
-    "@mediapipe/face_detection": "^0.4.1646425229",
-    "@tensorflow-models/face-landmarks-detection": "^1.0.5",
-    "@tensorflow/tfjs-core": "^4.17.0",
-    "@tensorflow/tfjs-backend-webgl": "^4.17.0"
   }
 }
